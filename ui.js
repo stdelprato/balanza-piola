@@ -178,6 +178,7 @@ const UI = (() => {
   function weightChart(days, { metric = "weight", goal = null, selectedIdx = -1, height = 190 } = {}) {
     const pts = days.filter(d => {
       if (metric === "fat") return d.fatAvg != null;
+      if (metric === "muscle") return d.muscleAvg != null;
       if (metric === "imp") return d.impAvg != null;
       return d.avg != null;
     });
@@ -190,6 +191,7 @@ const UI = (() => {
     for (const d of pts) {
       if (metric === "weight") { vals.push(d.min, d.max, d.trend); }
       else if (metric === "fat") vals.push(d.fatAvg);
+      else if (metric === "muscle") vals.push(d.muscleAvg);
       else vals.push(d.impAvg);
     }
     if (metric === "weight" && goal && goal > 20) {
@@ -223,11 +225,12 @@ const UI = (() => {
         <text x="${padL + 4}" y="${(gy - 5).toFixed(1)}" class="cg-goal-t">Meta ${dec1(goal)}</text>`;
     }
 
-    const lineColor = metric === "fat" ? "#ff9f43" : metric === "imp" ? "#a78bfa" : "#c6ff3d";
+    const lineColor = metric === "fat" ? "#ff9f43" : metric === "muscle" ? "#4dffb8" : metric === "imp" ? "#a78bfa" : "#c6ff3d";
     const id = "wc" + (++gid);
 
-    // Curva suave (tendencia para peso; serie directa para fat/imp)
-    const coords = pts.map((d, i) => [xOf(d, i), yOf(metric === "weight" ? d.trend : metric === "fat" ? d.fatAvg : d.impAvg)]);
+    // Curva suave (tendencia para peso; serie directa para fat/muscle/imp)
+    const valOf = d => metric === "weight" ? d.trend : metric === "fat" ? d.fatAvg : metric === "muscle" ? d.muscleAvg : d.impAvg;
+    const coords = pts.map((d, i) => [xOf(d, i), yOf(valOf(d))]);
     let pathD = `M${coords[0][0].toFixed(1)},${coords[0][1].toFixed(1)}`;
     for (let i = 1; i < coords.length; i++) {
       const [x0, y0] = coords[i - 1], [x1, y1] = coords[i], mx = (x0 + x1) / 2;
@@ -241,7 +244,7 @@ const UI = (() => {
     const sel = selectedIdx >= 0 && selectedIdx < pts.length ? selectedIdx : pts.length - 1;
     const markers = pts.map((d, i) => {
       const x = xOf(d, i);
-      const val = metric === "weight" ? d.avg : metric === "fat" ? d.fatAvg : d.impAvg;
+      const val = metric === "weight" ? d.avg : valOf(d);
       const y = yOf(val);
       const isSel = i === sel;
       let whisker = "";

@@ -5,7 +5,7 @@ const { icon, esc, haptic, int, dec1, dec2, signed1, signed2 } = UI;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const VERSION = "1.3";
+const VERSION = "1.4";
 const FIREBASE_DB = "https://paso-682df-default-rtdb.firebaseio.com";
 const TAGS = ["Ayunas", "Post-entreno", "Tarde", "Noche"];
 
@@ -61,24 +61,30 @@ const shareLink = room => `${location.origin}${location.pathname}?sync=${encodeU
 
 function enrichEntry(e) {
   if (!e || !S.profile) return e;
-  // Si hay impedancia válida y faltan métricas BIA, las calculamos con Sun/Janssen
+  // Si hay impedancia válida (Ω), priorizamos siempre las fórmulas científicas (Sun et al. / Janssen / Katch-McArdle)
+  // para consistencia real entre pesajes y sin mezclar con las del chip OEM.
   if (e.imp && e.imp >= 200 && e.imp <= 1200) {
     const m = C.biaMetrics({ kg: e.kg, cm: S.profile.height, age: S.profile.age, sex: S.profile.sex, imp: e.imp });
     if (m) {
       return {
         ...e,
-        fat: e.fat ?? m.fatPct,
-        water: e.water ?? m.waterPct,
-        muscle: e.muscle ?? m.musclePct,
-        bone: e.bone ?? m.boneKg,
-        bmr: e.bmr ?? m.bmr,
+        fat: m.fatPct,
+        fatKg: m.fatKg,
+        water: m.waterPct,
+        waterKg: m.waterKg,
+        muscle: m.musclePct,
+        muscleKg: m.muscleKg,
+        bone: m.boneKg,
+        bmr: m.bmr,
         ffm: m.ffmKg,
-        biaCalc: e.fat == null ? "sun" : "scale"
+        biaCalc: "sun"
       };
     }
   }
   return e;
 }
+
+const enrichedEntries = () => S.entries.map(enrichEntry);
 
 function addEntry(data) {
   const now = Date.now();
@@ -306,7 +312,8 @@ function renderWelcome() {
 // ==================== PANTALLA INICIO ====================
 function renderHome() {
   const p = S.profile;
-  const sum = C.summary(S.entries);
+  const all = enrichedEntries();
+  const sum = C.summary(all);
   const nowStr = new Date().toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" });
   const days30 = filterRange(sum.days, 30);
   const sel = view.homeSelIdx >= 0 && view.homeSelIdx < days30.length ? view.homeSelIdx : days30.length - 1;
@@ -316,8 +323,8 @@ function renderHome() {
     ? `<span class="pill ${sum.delta7 <= -0.05 ? "good" : sum.delta7 >= 0.05 ? "warn" : "soft"}">${icon(sum.delta7 <= 0 ? "down" : "up", 13)}${signed1(sum.delta7)} kg vs 7d ant.</span>`
     : sum.streak > 1 ? `<span class="pill acc">${sum.streak} días seguidos</span>` : "";
 
-  const latest = S.entries[0] || null;
-  const latestBia = S.entries.find(e => e.imp || e.fat != null) || null;
+  const latest = all[0] || null;
+  const latestBia = all.find(e => e.imp || e.fat != null) || null;
   const bmiVal = latest ? C.bmi(sum.currentTrend || latest.kg, p.height) : 0;
 
   const heroHtml = `
@@ -417,18 +424,20 @@ function renderHome() {
     </div>`;
 }
 
-function entryRow(e) {
+function entryRow(raw) {
+  const e = enrichEntry(raw);
   const parts = [];
   if (e.imp) parts.push(`${int(e.imp)} Ω`);
   if (e.fat != null) parts.push(`${dec1(e.fat)}% grasa`);
+  if (e.muscle != null) parts.push(`${dec1(e.muscle)}% músc.`);
   if (e.tag) parts.push(e.tag);
-  return `<button class="w-row" data-edit="${e.id}">
+  return `<button class="w-row" data-detail="${e.id}">
     <span class="w-t num">${fmtHour(e.t)}</span>
     <span class="w-mid">
       <b class="num">${dec2(e.kg)} <small>kg</small></b>
-      <span>${parts.length ? esc(parts.join(" · ")) : (e.proto ? esc(e.proto) : "Solo peso")}</span>
+      <span>${parts.length ? esc(parts.join(" · ")) : "Solo peso · sin bioimpedancia"}</span>
     </span>
-    <span class="w-src ${e.source === "ble" ? "ble" : ""}">${e.source === "ble" ? "BLE" : "MAN"}</span>
+    <span class="w-src ${e.imp ? "ble" : ""}">${e.imp ? "BIA" : e.source === "ble" ? "BLE" : "MAN"}</span>
   </button>`;
 }
 
@@ -440,31 +449,48 @@ function filterRange(days, range) {
 }
 
 function renderEvolution() {
-  const sum = C.summary(S.entries);
+  const sum = C.summary(enrichedEntries());
   const days = filterRange(sum.days, view.range);
-  const metricDays = days.filter(d => view.metric === "fat" ? d.fatAvg != null : view.metric === "imp" ? d.impAvg != null : true);
+  const metricDays = days.filter(d => view.metric === "fat" ? d.fatAvg != null : view.metric === "muscle" ? d.muscleAvg != null : view.metric === "imp" ? d.impAvg != null : true);
   const sel = view.selIdx >= 0 && view.selIdx < metricDays.length ? view.selIdx : metricDays.length - 1;
   const foc = metricDays[sel] || null;
   const weeks = [...sum.weeks].reverse().slice(0, 12);
 
   const focusStr = (() => {
     if (!foc) return "";
-    if (view.metric === "fat") return `<b class="num">${dec1(foc.fatAvg)}<small>%</small></b><span>${fmtDayShort(foc.ts)} · Grasa prom.</span>`;
+    if (view.metric === "fat") return `<b class="num">${dec1(foc.fatAvg)}<small>%</small></b><span>${fmtDayShort(foc.ts)} · Grasa corporal (Sun)</span>`;
+    if (view.metric === "muscle") return `<b class="num">${dec1(foc.muscleAvg)}<small>%</small></b><span>${fmtDayShort(foc.ts)} · Músculo esquelético (Janssen)</span>`;
     if (view.metric === "imp") return `<b class="num">${int(foc.impAvg)}<small>Ω</small></b><span>${fmtDayShort(foc.ts)} · Impedancia cruda</span>`;
     return `<b class="num">${dec1(foc.avg)}<small>kg</small></b><span>${fmtDayShort(foc.ts)} · Tend. ${dec1(foc.trend)}${foc.count > 1 ? ` · ${dec1(foc.min)}–${dec1(foc.max)} (${foc.count})` : ""}</span>`;
   })();
 
-  const periodDelta = metricDays.length >= 2 && view.metric === "weight"
-    ? C.round1(metricDays[metricDays.length - 1].trend - metricDays[0].trend) : null;
+  const periodDeltaPill = (() => {
+    if (metricDays.length < 2) return "";
+    const first = metricDays[0], last = metricDays[metricDays.length - 1];
+    if (view.metric === "weight") {
+      const d = C.round1(last.trend - first.trend);
+      return `<span class="pill ${d <= -0.05 ? "good" : d >= 0.05 ? "warn" : "soft"}">${signed1(d)} kg</span>`;
+    }
+    if (view.metric === "fat") {
+      const d = C.round1(last.fatAvg - first.fatAvg);
+      return `<span class="pill ${d <= -0.05 ? "good" : d >= 0.05 ? "warn" : "soft"}">${signed1(d)}%</span>`;
+    }
+    if (view.metric === "muscle") {
+      const d = C.round1(last.muscleAvg - first.muscleAvg);
+      return `<span class="pill ${d >= 0.05 ? "good" : d <= -0.05 ? "warn" : "soft"}">${signed1(d)}%</span>`;
+    }
+    const d = Math.round(last.impAvg - first.impAvg);
+    return `<span class="pill soft">${d > 0 ? "+" : d < 0 ? "−" : ""}${Math.abs(d)} Ω</span>`;
+  })();
 
   const chartCard = `
     <div class="card">
       <div class="card-h">
         <span class="card-t">Curva y tendencia</span>
-        ${periodDelta != null ? `<span class="pill ${periodDelta <= -0.05 ? "good" : periodDelta >= 0.05 ? "warn" : "soft"}">${signed1(periodDelta)} kg en período</span>` : ""}
+        ${periodDeltaPill}
       </div>
       <div class="chips" style="margin-bottom:12px">
-        ${[["weight", "Peso"], ["fat", "Grasa %"], ["imp", "Impedancia Ω"]].map(([m, l]) =>
+        ${[["weight", "Peso"], ["fat", "Grasa %"], ["muscle", "Músculo %"], ["imp", "Impedancia Ω"]].map(([m, l]) =>
           `<button class="chip-btn ${view.metric === m ? "on" : ""}" data-metric="${m}">${l}</button>`
         ).join("")}
       </div>
@@ -473,7 +499,7 @@ function renderEvolution() {
       <div class="legend">
         ${view.metric === "weight"
           ? `<span><i style="background:var(--acc)"></i>Tendencia suavizada</span><span><i style="background:var(--cyan)"></i>Promedio diario + mín/máx</span>`
-          : `<span><i style="background:${view.metric === "fat" ? "var(--amb)" : "var(--vio)"}"></i>Promedio diario</span>`}
+          : `<span><i style="background:${view.metric === "fat" ? "var(--amb)" : view.metric === "muscle" ? "var(--good)" : "var(--vio)"}"></i>Promedio diario</span>`}
       </div>
     </div>`;
 
@@ -529,7 +555,7 @@ function renderEvolution() {
 
 // ==================== PANTALLA HISTORIAL ====================
 function renderHistory() {
-  const days = C.dailySeries(S.entries).reverse();
+  const days = C.dailySeries(enrichedEntries()).reverse();
   $("#s-history").innerHTML = `
     <div class="top">
       <div><div class="eyebrow">${S.entries.length} ${S.entries.length === 1 ? "registro" : "registros"}</div><h1>Historial</h1></div>
@@ -651,12 +677,20 @@ function renderLive() {
             ? "Parate un segundo en la Femmto para encender el Bluetooth y tocá Conectar."
             : "Mantenete quieto unos segundos hasta que el peso quede fijo (descalzo para bioimpedancia).";
 
+  const biaStatusPill = liveState.imp
+    ? `<span class="pill good">${icon("check", 14)}Bioimpedancia OK · ${int(liveState.imp)} Ω</span>`
+    : (liveState.bioState === "unavailable" || (liveState.saved && !liveState.imp))
+      ? `<span class="pill warn">Solo peso · sin contacto BIA</span>`
+      : liveState.bioState === "measuring"
+        ? `<span class="pill acc">Midiendo impedancia…</span>`
+        : "";
+
   const biaChips = [];
-  if (liveState.imp) biaChips.push(`<span class="pill acc">${int(liveState.imp)} Ω</span>`);
   const preview = liveState.kg ? enrichEntry({ ...liveState }) : null;
   if (preview && preview.fat != null) biaChips.push(`<span class="pill soft">Grasa ${dec1(preview.fat)}%</span>`);
-  if (preview && preview.water != null) biaChips.push(`<span class="pill soft">Agua ${dec1(preview.water)}%</span>`);
   if (preview && preview.muscle != null) biaChips.push(`<span class="pill soft">Músculo ${dec1(preview.muscle)}%</span>`);
+  if (preview && preview.water != null) biaChips.push(`<span class="pill soft">Agua ${dec1(preview.water)}%</span>`);
+  if (preview && preview.bmr != null && liveState.imp) biaChips.push(`<span class="pill soft">${int(preview.bmr)} kcal</span>`);
 
   const lastLog = ble.logs.length ? ble.logs[ble.logs.length - 1] : "";
 
@@ -676,6 +710,7 @@ function renderLive() {
           <span class="u">kg</span>
           <span class="st">${esc(ringSt)}</span>
         </div>
+        ${biaStatusPill ? `<div style="margin-top:14px">${biaStatusPill}</div>` : ""}
         ${biaChips.length ? `<div class="live-bia">${biaChips.join("")}</div>` : ""}
         <p class="scale-hint">${esc(hint)}</p>
         ${lastLog ? `<p class="scale-hint" style="margin-top:6px;font:11.5px/1.4 ui-monospace,monospace;color:var(--t3);word-break:break-all">${esc(lastLog)}</p>` : ""}
@@ -853,6 +888,61 @@ function extractRoomCode(raw) {
     }
   } catch (e) {}
   return raw.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function detailEntrySheet(raw) {
+  const e = enrichEntry(raw);
+  const p = S.profile;
+  const bmiVal = C.bmi(e.kg, p.height);
+  const hasBia = !!(e.imp && e.imp >= 200 && e.imp <= 1200);
+  const biaBadge = hasBia
+    ? `<span class="pill good">${icon("check", 13)}Bioimpedancia OK · ${int(e.imp)} Ω</span>`
+    : `<span class="pill warn">Solo peso · sin lectura de bioimpedancia</span>`;
+
+  const metricsHtml = hasBia ? `
+    <div class="bia-grid">
+      <div class="bia-box"><div class="top-b"><span>Grasa corporal</span>${icon("flame", 15)}</div><b class="num">${dec1(e.fat)}<small>%</small></b><span>${dec1(e.fatKg)} kg · Sun et al.</span></div>
+      <div class="bia-box"><div class="top-b"><span>Músculo esq.</span>${icon("bolt", 15)}</div><b class="num">${dec1(e.muscle)}<small>%</small></b><span>${dec1(e.muscleKg)} kg · Janssen</span></div>
+      <div class="bia-box"><div class="top-b"><span>Masa magra</span>${icon("wave", 15)}</div><b class="num">${dec1(e.ffm)}<small>kg</small></b><span>FFM sin grasa</span></div>
+      <div class="bia-box"><div class="top-b"><span>Agua corporal</span>${icon("drop", 15)}</div><b class="num">${dec1(e.water)}<small>%</small></b><span>${dec1(e.waterKg)} kg · TBW</span></div>
+      <div class="bia-box"><div class="top-b"><span>Masa ósea</span>${icon("shield", 15)}</div><b class="num">${dec1(e.bone)}<small>kg</small></b><span>Estimada</span></div>
+      <div class="bia-box"><div class="top-b"><span>Basal (BMR)</span>${icon("sun", 15)}</div><b class="num">${int(e.bmr)}<small>kcal</small></b><span>Katch-McArdle</span></div>
+    </div>` : `
+    <div class="card" style="margin:0;padding:14px">
+      <div style="font-size:13px;color:var(--t2);line-height:1.45">
+        Este pesaje no recibió impedancia (Ω). Para medir grasa y músculo, subite descalzo sobre las 4 chapitas metálicas y esperá ~5 segundos tras fijar el peso.
+      </div>
+    </div>`;
+
+  const s = UI.sheet(`
+    <div class="sheet-body">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div>
+          <div class="eyebrow">${esc(fmtDayFull(e.t))} · ${fmtHour(e.t)}</div>
+          <div class="hero-val num" style="font-size:44px;margin-top:4px">${dec2(e.kg)}<small>kg</small></div>
+        </div>
+        <span class="w-src ${e.source === "ble" ? "ble" : ""}" style="margin-top:6px">${e.source === "ble" ? esc(e.proto || "BLE") : "Manual"}</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        ${biaBadge}
+        ${bmiVal ? `<span class="pill soft">IMC ${dec1(bmiVal)} · ${C.bmiLabel(bmiVal)}</span>` : ""}
+        ${e.tag ? `<span class="pill acc">${esc(e.tag)}</span>` : ""}
+      </div>
+      ${metricsHtml}
+      <div style="display:flex;gap:10px;margin-top:4px">
+        <button class="btn btn-soft sm" style="flex:1" data-go-edit>${icon("edit", 16)}Editar</button>
+        <button class="icon-btn" style="color:var(--danger);flex:0 0 46px;width:46px" data-go-del aria-label="Eliminar">${icon("trash", 18)}</button>
+      </div>
+    </div>`);
+
+  s.el.querySelector("[data-go-edit]").onclick = () => { s.close(); manualWeighSheet(raw); };
+  s.el.querySelector("[data-go-del]").onclick = async () => {
+    if (!(await UI.confirm({ title: "¿Eliminar pesaje?", ok: "Eliminar", danger: true }))) return;
+    deleteEntry(raw.id);
+    s.close();
+    UI.toast("Pesaje eliminado");
+    render();
+  };
 }
 
 function manualWeighSheet(existing = null) {
@@ -1072,11 +1162,11 @@ document.addEventListener("click", async e => {
     return;
   }
 
-  // Editar pesaje
-  const ed = e.target.closest("[data-edit]");
-  if (ed) {
-    const entry = S.entries.find(x => x.id === ed.dataset.edit);
-    if (entry) manualWeighSheet(entry);
+  // Ver detalle del pesaje (y desde ahí botón Editar)
+  const det = e.target.closest("[data-detail]");
+  if (det) {
+    const entry = S.entries.find(x => x.id === det.dataset.detail);
+    if (entry) detailEntrySheet(entry);
     return;
   }
 
