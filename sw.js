@@ -1,5 +1,5 @@
 // Network-first con fallback a caché (3 s) para actualización automática en PWA.
-const CACHE = "balanza-v5";
+const CACHE = "balanza-v6";
 const FILES = ["./", "index.html", "styles.css", "core.js", "ble.js", "ui.js", "app.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "version.json"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener("activate", e => e.waitUntil(

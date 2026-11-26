@@ -5,7 +5,7 @@ const { icon, esc, haptic, int, dec1, dec2, signed1, signed2 } = UI;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const VERSION = "1.4";
+const VERSION = "1.5";
 const FIREBASE_DB = "https://paso-682df-default-rtdb.firebaseio.com";
 const TAGS = ["Ayunas", "Post-entreno", "Tarde", "Noche"];
 
@@ -38,7 +38,7 @@ const save = {
   remoteDiag: () => store.set("remoteDiag", S.remoteDiag)
 };
 
-const view = { tab: "home", range: 30, metric: "weight", selIdx: -1, homeSelIdx: -1 };
+const view = { tab: "home", range: 30, metric: "weight", slot: "all", selIdx: -1, homeSelIdx: -1 };
 const ble = new ScaleBLE();
 let liveOpen = false;
 let liveState = { kg: null, locked: false, bioState: null, imp: null, fat: null, water: null, muscle: null, bone: null, bmr: null, visceral: null, proto: null, saved: false, savedId: null, autoTimer: null, rawSeen: 0 };
@@ -326,6 +326,12 @@ function renderHome() {
   const latest = all[0] || null;
   const latestBia = all.find(e => e.imp || e.fat != null) || null;
   const bmiVal = latest ? C.bmi(sum.currentTrend || latest.kg, p.height) : 0;
+  const dn = C.dayNightAnalysis(all);
+
+  // Si hoy solo hay pesaje nocturno y ya conocemos la brecha real Noche-Mañana (>=2 días emparejados), mostramos equivalente en ayunas
+  const todaySlots = sum.today ? new Set(sum.today.entries.map(C.timeSlot)) : new Set();
+  const todayEquivAm = (sum.today && todaySlots.has("pm") && !todaySlots.has("am") && dn.pairedDays >= 2 && dn.deltaKg != null)
+    ? C.round1(sum.today.avg - dn.deltaKg) : null;
 
   const heroHtml = `
     <div class="card hero-card">
@@ -344,7 +350,7 @@ function renderHome() {
         <div class="kpi-mini">
           <span>Hoy</span>
           <b class="num">${sum.today ? dec1(sum.today.avg) : "—"}</b>
-          <em>${sum.today ? (sum.today.count > 1 ? `${sum.today.count} pes. · ±${dec1(sum.today.spread)}` : fmtHour(sum.today.last.t)) : "Sin pesaje"}</em>
+          <em>${sum.today ? (todayEquivAm != null ? `≈ ${dec1(todayEquivAm)} ayunas` : sum.today.count > 1 ? `${sum.today.count} pes. · ±${dec1(sum.today.spread)}` : fmtHour(sum.today.last.t)) : "Sin pesaje"}</em>
         </div>
         <div class="kpi-mini">
           <span>Prom. 7d</span>
@@ -424,14 +430,23 @@ function renderHome() {
     </div>`;
 }
 
+function slotMeta(e) {
+  const sl = C.timeSlot(e);
+  if (sl === "am") return { id: "am", label: "Mañana", ic: "sun", cls: "am" };
+  if (sl === "pm") return { id: "pm", label: "Noche", ic: "moon", cls: "pm" };
+  return { id: "mid", label: "Tarde", ic: "sun", cls: "mid" };
+}
+
 function entryRow(raw) {
   const e = enrichEntry(raw);
+  const sl = slotMeta(e);
   const parts = [];
   if (e.imp) parts.push(`${int(e.imp)} Ω`);
   if (e.fat != null) parts.push(`${dec1(e.fat)}% grasa`);
   if (e.muscle != null) parts.push(`${dec1(e.muscle)}% músc.`);
   if (e.tag) parts.push(e.tag);
   return `<button class="w-row" data-detail="${e.id}">
+    <span class="w-slot ${sl.cls}" title="${sl.label}">${icon(sl.ic, 15)}</span>
     <span class="w-t num">${fmtHour(e.t)}</span>
     <span class="w-mid">
       <b class="num">${dec2(e.kg)} <small>kg</small></b>
@@ -449,12 +464,18 @@ function filterRange(days, range) {
 }
 
 function renderEvolution() {
-  const sum = C.summary(enrichedEntries());
+  const all = enrichedEntries();
+  const scoped = C.filterBySlot(all, view.slot);
+  const sum = C.summary(scoped);
+  const fullSum = C.summary(all);
+  const dn = C.dayNightAnalysis(all);
   const days = filterRange(sum.days, view.range);
   const metricDays = days.filter(d => view.metric === "fat" ? d.fatAvg != null : view.metric === "muscle" ? d.muscleAvg != null : view.metric === "imp" ? d.impAvg != null : true);
   const sel = view.selIdx >= 0 && view.selIdx < metricDays.length ? view.selIdx : metricDays.length - 1;
   const foc = metricDays[sel] || null;
   const weeks = [...sum.weeks].reverse().slice(0, 12);
+
+  const slotLabel = view.slot === "am" ? "solo mañanas" : view.slot === "pm" ? "solo noches" : "todos los turnos";
 
   const focusStr = (() => {
     if (!foc) return "";
@@ -489,6 +510,11 @@ function renderEvolution() {
         <span class="card-t">Curva y tendencia</span>
         ${periodDeltaPill}
       </div>
+      <div class="chips" style="margin-bottom:10px">
+        ${[["all", "Todos"], ["am", "☀ Mañana"], ["pm", "☾ Noche"]].map(([sv, sl]) =>
+          `<button class="chip-btn ${view.slot === sv ? "on" : ""}" data-slot="${sv}">${sl}</button>`
+        ).join("")}
+      </div>
       <div class="chips" style="margin-bottom:12px">
         ${[["weight", "Peso"], ["fat", "Grasa %"], ["muscle", "Músculo %"], ["imp", "Impedancia Ω"]].map(([m, l]) =>
           `<button class="chip-btn ${view.metric === m ? "on" : ""}" data-metric="${m}">${l}</button>`
@@ -498,23 +524,58 @@ function renderEvolution() {
       <div data-chart="evo">${UI.weightChart(days, { metric: view.metric, goal: S.profile.goal, selectedIdx: sel, height: 215 })}</div>
       <div class="legend">
         ${view.metric === "weight"
-          ? `<span><i style="background:var(--acc)"></i>Tendencia suavizada</span><span><i style="background:var(--cyan)"></i>Promedio diario + mín/máx</span>`
-          : `<span><i style="background:${view.metric === "fat" ? "var(--amb)" : view.metric === "muscle" ? "var(--good)" : "var(--vio)"}"></i>Promedio diario</span>`}
+          ? `<span><i style="background:var(--acc)"></i>Tendencia (${slotLabel})</span><span><i style="background:var(--cyan)"></i>Prom. diario y rango</span>`
+          : `<span><i style="background:${view.metric === "fat" ? "var(--amb)" : view.metric === "muscle" ? "var(--good)" : "var(--vio)"}"></i>Promedio diario (${slotLabel})</span>`}
       </div>
     </div>`;
 
-  const intra = sum.intraday;
+  const dnCard = `
+    <div class="card">
+      <div class="card-h">
+        <span class="card-t">Mañana vs Noche</span>
+        <span class="card-s">${dn.pairedDays ? `${dn.pairedDays} ${dn.pairedDays === 1 ? "día" : "días"} con ambos` : "Comparativa por turno"}</span>
+      </div>
+      <div class="dn-grid">
+        <div class="dn-col">
+          <div class="dn-hd am">${icon("sun", 14)}Mañana <em>${dn.am ? `${dn.am.count}x` : "0"}</em></div>
+          <b class="num">${dn.am ? `${dec1(dn.am.kg)}<small>kg</small>` : "—"}</b>
+          <div class="dn-meta">
+            <span>${dn.am && dn.am.imp ? `${int(dn.am.imp)} Ω` : "Sin Ω"}</span>
+            <span>${dn.am && dn.am.fat != null ? `${dec1(dn.am.fat)}% gr.` : ""}</span>
+            <span>${dn.am && dn.am.muscle != null ? `${dec1(dn.am.muscle)}% m.` : ""}</span>
+          </div>
+        </div>
+        <div class="dn-col">
+          <div class="dn-hd pm">${icon("moon", 14)}Noche <em>${dn.pm ? `${dn.pm.count}x` : "0"}</em></div>
+          <b class="num">${dn.pm ? `${dec1(dn.pm.kg)}<small>kg</small>` : "—"}</b>
+          <div class="dn-meta">
+            <span>${dn.pm && dn.pm.imp ? `${int(dn.pm.imp)} Ω` : "Sin Ω"}</span>
+            <span>${dn.pm && dn.pm.fat != null ? `${dec1(dn.pm.fat)}% gr.` : ""}</span>
+            <span>${dn.pm && dn.pm.muscle != null ? `${dec1(dn.pm.muscle)}% m.` : ""}</span>
+          </div>
+        </div>
+      </div>
+      ${dn.pairedDays ? `
+        <div class="dn-deltas">
+          <div><span>Δ Peso</span><b class="num">${signed2(dn.deltaKg)} kg</b></div>
+          <div><span>Δ Impedancia</span><b class="num">${dn.deltaImp != null ? `${dn.deltaImp > 0 ? "+" : dn.deltaImp < 0 ? "−" : ""}${int(Math.abs(dn.deltaImp))} Ω` : "—"}</b></div>
+          <div><span>Δ Grasa</span><b class="num">${dn.deltaFat != null ? `${signed1(dn.deltaFat)}%` : "—"}</b></div>
+          <div><span>Δ Músculo</span><b class="num">${dn.deltaMuscle != null ? `${signed1(dn.deltaMuscle)}%` : "—"}</b></div>
+        </div>` : `<div class="dn-foot">Cuando te peses mañana y noche el mismo día, vas a ver tu brecha exacta de agua, comida e impedancia.</div>`}
+    </div>`;
+
+  const intra = fullSum.intraday;
   const fluctCard = `
     <div class="duo-grid">
       <div class="stat-tile">
-        <div class="lbl">${icon("wave", 14)}Fluctuación diaria</div>
+        <div class="lbl">${icon("wave", 14)}Amplitud diaria</div>
         <b class="num">${intra.avgSpread != null ? `±${dec1(intra.avgSpread)}<small>kg</small>` : "—"}</b>
         <div class="s">${intra.multiDays ? `En ${intra.multiDays} días con +2 pesajes` : "Pesate 2+ veces en un día"}</div>
       </div>
       <div class="stat-tile">
-        <div class="lbl">${icon("moon", 14)}Noche vs Mañana</div>
-        <b class="num">${intra.pmMinusAm != null ? `${signed1(intra.pmMinusAm)}<small>kg</small>` : "—"}</b>
-        <div class="s">${intra.pmMinusAm != null ? "Diferencia típica del día" : "Requiere pesaje AM y PM"}</div>
+        <div class="lbl">${icon("moon", 14)}Noche − Mañana</div>
+        <b class="num">${dn.deltaKg != null ? `${signed1(dn.deltaKg)}<small>kg</small>` : "—"}</b>
+        <div class="s">${dn.pairedDays ? "Diferencia real del día" : "Requiere AM y PM"}</div>
       </div>
     </div>`;
 
@@ -522,7 +583,7 @@ function renderEvolution() {
     <div class="card">
       <div class="card-h">
         <span class="card-t">Promedios semanales</span>
-        <span class="card-s">Media de promedios diarios</span>
+        <span class="card-s">${esc(slotLabel)}</span>
       </div>
       ${weeks.length ? `<div class="wk-table">${weeks.map((w, i) => {
         const lbl = i === 0 && w.key === C.dayKey(C.weekStart(new Date()).getTime())
@@ -532,7 +593,7 @@ function renderEvolution() {
         return `<div class="wk-row">
           <div>
             <b>${esc(lbl)}</b>
-            <small class="wk-sub">${w.daysCount} d · ${w.weighIns} pesajes · ${dec1(w.min)}–${dec1(w.max)}</small>
+            <small class="wk-sub">${w.daysCount} d · ${w.weighIns} pesajes · ${dec1(w.min)}–${dec1(w.max)}${w.fatAvg != null ? ` · ${dec1(w.fatAvg)}% gr.` : ""}</small>
           </div>
           <div class="wk-avg num">${dec1(w.avg)} <small>kg</small></div>
           <div class="wk-d num ${dCls}">${w.delta != null ? `${signed1(w.delta)} kg` : "—"}</div>
@@ -548,8 +609,8 @@ function renderEvolution() {
       ${UI.seg("range", [{ v: "7", label: "7D" }, { v: "30", label: "30D" }, { v: "90", label: "90D" }, { v: "all", label: "Todo" }], String(view.range))}
     </div>
     <div class="desk-grid">
-      <div class="desk-stack">${chartCard}${fluctCard}</div>
-      <div class="desk-stack">${weeksCard}</div>
+      <div class="desk-stack">${chartCard}${dnCard}</div>
+      <div class="desk-stack">${weeksCard}${fluctCard}</div>
     </div>`;
 }
 
@@ -914,11 +975,12 @@ function detailEntrySheet(raw) {
       </div>
     </div>`;
 
+  const sl = slotMeta(e);
   const s = UI.sheet(`
     <div class="sheet-body">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
         <div>
-          <div class="eyebrow">${esc(fmtDayFull(e.t))} · ${fmtHour(e.t)}</div>
+          <div class="eyebrow">${esc(fmtDayFull(e.t))} · ${fmtHour(e.t)} · ${sl.label}</div>
           <div class="hero-val num" style="font-size:44px;margin-top:4px">${dec2(e.kg)}<small>kg</small></div>
         </div>
         <span class="w-src ${e.source === "ble" ? "ble" : ""}" style="margin-top:6px">${e.source === "ble" ? esc(e.proto || "BLE") : "Manual"}</span>
@@ -1135,6 +1197,16 @@ document.addEventListener("click", async e => {
   const segBtn = e.target.closest("[data-seg='range'] button");
   if (segBtn) {
     view.range = segBtn.dataset.v === "all" ? "all" : +segBtn.dataset.v;
+    view.selIdx = -1;
+    haptic(4);
+    renderEvolution();
+    return;
+  }
+
+  // Chips de turno (Todos / Mañana / Noche) en Evolución
+  const slBtn = e.target.closest("[data-slot]");
+  if (slBtn) {
+    view.slot = slBtn.dataset.slot;
     view.selIdx = -1;
     haptic(4);
     renderEvolution();

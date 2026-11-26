@@ -183,7 +183,24 @@ body.onboarding .cta, body.onboarding .tabbar { display: none; }
 .today-list { display: flex; flex-direction: column; gap: 8px; }
 .w-row { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 14px; border-radius: 17px; background: var(--s1); border: 1px solid var(--line); transition: transform .13s; }
 .w-row:active { transform: scale(.985); }
-.w-row .w-t { font-size: 13px; font-weight: 750; color: var(--t2); min-width: 44px; }
+.w-row .w-slot { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; background: var(--s3); color: var(--t2); }
+.w-row .w-slot.am { background: rgba(255, 162, 61, .14); color: var(--amb); }
+.w-row .w-slot.pm { background: rgba(167, 139, 250, .14); color: var(--vio); }
+.w-row .w-t { font-size: 13px; font-weight: 750; color: var(--t2); min-width: 40px; }
+
+/* Mañana vs Noche */
+.dn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dn-col { background: rgba(255, 255, 255, .028); border: 1px solid var(--line); border-radius: 16px; padding: 12px 13px; }
+.dn-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 750; color: var(--t2); }
+.dn-hd.am { color: var(--amb); }
+.dn-hd.pm { color: var(--vio); }
+.dn-hd em { margin-left: auto; font-style: normal; color: var(--t3); font-weight: 650; }
+.dn-col b { display: block; font-size: 25px; font-weight: 850; letter-spacing: -.04em; margin-top: 8px; line-height: 1; }
+.dn-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 8px; font-size: 11.5px; color: var(--t2); font-weight: 600; }
+.dn-deltas { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); text-align: center; }
+.dn-deltas span { display: block; font-size: 10.5px; font-weight: 700; color: var(--t3); text-transform: uppercase; letter-spacing: .04em; }
+.dn-deltas b { display: block; font-size: 14px; font-weight: 800; margin-top: 4px; color: var(--t1); }
+.dn-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--t2); line-height: 1.4; }
 .w-row .w-mid { flex: 1; min-width: 0; }
 .w-row .w-mid b { display: block; font-size: 17px; font-weight: 800; }
 .w-row .w-mid span { display: block; font-size: 12px; color: var(--t2); font-weight: 550; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

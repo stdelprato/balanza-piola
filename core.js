@@ -614,21 +614,92 @@
     return weeks;
   }
 
+  // Clasificación automática de turno: Mañana (04:00-12:59), Tarde (13:00-18:59), Noche (19:00-03:59)
+  function timeSlot(entry) {
+    if (!entry) return "mid";
+    const tag = (entry.tag || "").toLowerCase();
+    if (tag === "ayunas" || tag === "mañana") return "am";
+    if (tag === "noche") return "pm";
+    const h = new Date(entry.t).getHours();
+    if (h >= 4 && h < 13) return "am";
+    if (h >= 19 || h < 4) return "pm";
+    return "mid";
+  }
+
+  function filterBySlot(entries, slot) {
+    if (!slot || slot === "all") return entries || [];
+    return (entries || []).filter(e => timeSlot(e) === slot);
+  }
+
+  // Comparativa detallada Mañana vs Noche (peso, impedancia Ω, grasa %, músculo %)
+  function dayNightAnalysis(entries) {
+    const valid = (entries || []).filter(e => e && validKg(e.kg));
+    const amAll = valid.filter(e => timeSlot(e) === "am");
+    const pmAll = valid.filter(e => timeSlot(e) === "pm");
+    const statOf = list => {
+      if (!list.length) return null;
+      const imps = list.map(e => e.imp).filter(v => v >= 200 && v <= 1200);
+      const fats = list.map(e => e.fat).filter(v => v > 2 && v < 75);
+      const musc = list.map(e => e.muscle).filter(v => v > 10 && v < 85);
+      return {
+        count: list.length,
+        kg: round2(avg(list.map(e => e.kg))),
+        imp: imps.length ? round1(avg(imps)) : null,
+        fat: fats.length ? round1(avg(fats)) : null,
+        muscle: musc.length ? round1(avg(musc)) : null
+      };
+    };
+
+    // Días emparejados (misma jornada con pesaje AM y PM) para medir la brecha real sin sesgo de tendencia
+    const byDay = new Map();
+    for (const e of valid) {
+      const slot = timeSlot(e);
+      if (slot !== "am" && slot !== "pm") continue;
+      // Si es de madrugada (00:00-03:59), pertenece a la noche del día anterior
+      const h = new Date(e.t).getHours();
+      const baseTs = h < 4 ? e.t - 864e5 : e.t;
+      const k = dayKey(baseTs);
+      if (!byDay.has(k)) byDay.set(k, { am: [], pm: [] });
+      byDay.get(k)[slot].push(e);
+    }
+
+    const dKg = [], dImp = [], dFat = [], dMus = [];
+    for (const { am, pm } of byDay.values()) {
+      if (!am.length || !pm.length) continue;
+      dKg.push(avg(pm.map(e => e.kg)) - avg(am.map(e => e.kg)));
+      const amImp = am.map(e => e.imp).filter(v => v >= 200 && v <= 1200);
+      const pmImp = pm.map(e => e.imp).filter(v => v >= 200 && v <= 1200);
+      if (amImp.length && pmImp.length) dImp.push(avg(pmImp) - avg(amImp));
+      const amFat = am.map(e => e.fat).filter(v => v > 2 && v < 75);
+      const pmFat = pm.map(e => e.fat).filter(v => v > 2 && v < 75);
+      if (amFat.length && pmFat.length) dFat.push(avg(pmFat) - avg(amFat));
+      const amMus = am.map(e => e.muscle).filter(v => v > 10 && v < 85);
+      const pmMus = pm.map(e => e.muscle).filter(v => v > 10 && v < 85);
+      if (amMus.length && pmMus.length) dMus.push(avg(pmMus) - avg(amMus));
+    }
+
+    return {
+      am: statOf(amAll),
+      pm: statOf(pmAll),
+      pairedDays: dKg.length,
+      pairedBiaDays: dImp.length,
+      deltaKg: dKg.length ? round2(avg(dKg)) : null,
+      deltaImp: dImp.length ? round1(avg(dImp)) : null,
+      deltaFat: dFat.length ? round1(avg(dFat)) : null,
+      deltaMuscle: dMus.length ? round1(avg(dMus)) : null
+    };
+  }
+
   // Fluctuación dentro del mismo día (mañana vs noche y amplitud típica).
   function intradayStats(entries) {
     const days = dailySeries(entries);
     const multi = days.filter(d => d.count >= 2);
     const avgSpread = multi.length ? round2(avg(multi.map(d => d.spread))) : null;
-    const diffs = [];
-    for (const d of multi) {
-      const am = d.entries.filter(e => { const h = new Date(e.t).getHours(); return h >= 4 && h < 12; });
-      const pm = d.entries.filter(e => { const h = new Date(e.t).getHours(); return h >= 17 && h <= 23; });
-      if (am.length && pm.length) diffs.push(avg(pm.map(e => e.kg)) - avg(am.map(e => e.kg)));
-    }
+    const dn = dayNightAnalysis(entries);
     return {
       multiDays: multi.length,
       avgSpread,
-      pmMinusAm: diffs.length ? round2(avg(diffs)) : null
+      pmMinusAm: dn.deltaKg
     };
   }
 
@@ -727,7 +798,7 @@
     parseGattNotification, parseAdvertisement,
     bmi, bmiLabel, bmrMifflin, biaMetrics,
     dayStart, addDays, weekStart, dayKey, keyToDate,
-    dailySeries, addTrend, weeklySeries, intradayStats, summary,
+    dailySeries, addTrend, weeklySeries, timeSlot, filterBySlot, dayNightAnalysis, intradayStats, summary,
     mergeEntries, toCsv
   };
 
