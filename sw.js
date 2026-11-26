@@ -1,0 +1,18 @@
+// Network-first con fallback a caché (3 s) para actualización automática en PWA.
+const CACHE = "balanza-v1";
+const FILES = ["./", "index.html", "styles.css", "core.js", "ble.js", "ui.js", "app.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png", "version.json"];
+self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
+self.addEventListener("activate", e => e.waitUntil(
+  caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())
+));
+self.addEventListener("fetch", e => {
+  if (e.request.method !== "GET") return;
+  const u = new URL(e.request.url);
+  if (u.origin !== self.location.origin) return;
+  const net = fetch(e.request, { cache: "no-cache" }).then(r => {
+    if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+    return r;
+  });
+  const slow = new Promise(res => setTimeout(() => caches.match(e.request).then(m => m && res(m)), 3000));
+  e.respondWith(Promise.race([net.catch(() => caches.match(e.request)), slow]));
+});
