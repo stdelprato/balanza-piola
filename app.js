@@ -5,7 +5,7 @@ const { icon, esc, haptic, int, dec1, dec2, signed1, signed2 } = UI;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const VERSION = "1.2";
+const VERSION = "1.3";
 const FIREBASE_DB = "https://paso-682df-default-rtdb.firebaseio.com";
 const TAGS = ["Ayunas", "Post-entreno", "Tarde", "Noche"];
 
@@ -41,7 +41,7 @@ const save = {
 const view = { tab: "home", range: 30, metric: "weight", selIdx: -1, homeSelIdx: -1 };
 const ble = new ScaleBLE();
 let liveOpen = false;
-let liveState = { kg: null, locked: false, imp: null, fat: null, water: null, muscle: null, bone: null, bmr: null, visceral: null, proto: null, saved: false, autoTimer: null, rawSeen: 0 };
+let liveState = { kg: null, locked: false, bioState: null, imp: null, fat: null, water: null, muscle: null, bone: null, bmr: null, visceral: null, proto: null, saved: false, savedId: null, autoTimer: null, rawSeen: 0 };
 
 // ==================== HELPERS ====================
 const fmtDayShort = ts => new Date(ts).toLocaleDateString("es-AR", { weekday: "short", day: "numeric", month: "short" }).replace(/\./g, "");
@@ -595,7 +595,7 @@ function renderProfile() {
 function openLiveWeighIn() {
   liveOpen = true;
   clearTimeout(liveState.autoTimer);
-  liveState = { kg: null, locked: false, imp: null, fat: null, water: null, muscle: null, bone: null, bmr: null, visceral: null, proto: null, saved: false, autoTimer: null, rawSeen: 0 };
+  liveState = { kg: null, locked: false, bioState: null, imp: null, fat: null, water: null, muscle: null, bone: null, bmr: null, visceral: null, proto: null, saved: false, savedId: null, autoTimer: null, rawSeen: 0 };
   $("#live").scrollTop = 0;
   $("#live").classList.add("on");
   renderLive();
@@ -631,22 +631,25 @@ function renderLive() {
     : st === "connecting" ? "Conectando…"
     : ble.supported ? "Listo para conectar" : "Sin Web Bluetooth acá";
 
-  const ringCls = liveState.locked ? "locked" : liveState.kg ? "measuring" : "";
+  const ringCls = liveState.saved ? "locked" : liveState.locked && liveState.bioState !== "measuring" ? "locked" : liveState.kg ? "measuring" : "";
   const ringSt = liveState.saved ? "GUARDADO ✓"
+    : liveState.bioState === "measuring" ? "MIDIENDO BIOIMPEDANCIA…"
     : liveState.locked ? `FIJO · ${liveState.proto || "BLE"}`
     : liveState.kg ? "MIDIENDO…"
     : st === "on" || st === "scanning" ? "SUBITE DESCALZO"
     : "DESPIERTA LA BALANZA";
 
   const hint = liveState.saved
-    ? "Pesaje guardado y sincronizado."
-    : !ble.supported
-      ? "Esta compu/navegador no tiene Web Bluetooth. Podés cargar el peso a mano o pesarte desde Chrome en Android."
-      : liveState.rawSeen > 0 && !liveState.kg
-        ? `Recibí ${liveState.rawSeen} paquete(s) BLE pero el formato todavía no está mapeado. Abrí Diagnóstico para copiarlo y lo decodificamos.`
-        : st === "off"
-          ? "Parate un segundo en la Femmto para encender el Bluetooth y tocá Conectar."
-          : "Mantenete quieto unos segundos hasta que el peso quede fijo (y descalzo si querés impedancia).";
+    ? (liveState.bioState === "unavailable" && !liveState.fat && !liveState.imp ? "Guardado (solo peso — sin lectura de impedancia)." : "Pesaje guardado y sincronizado.")
+    : liveState.bioState === "measuring"
+      ? "Peso fijo. Quedate descalzo 3–5 s sin moverte mientras analiza composición corporal…"
+      : !ble.supported
+        ? "Esta compu/navegador no tiene Web Bluetooth. Podés cargar el peso a mano o pesarte desde Chrome en Android."
+        : liveState.rawSeen > 0 && !liveState.kg
+          ? `Recibí ${liveState.rawSeen} paquete(s) BLE pero el formato todavía no está mapeado. Abrí Diagnóstico para copiarlo y lo decodificamos.`
+          : st === "off"
+            ? "Parate un segundo en la Femmto para encender el Bluetooth y tocá Conectar."
+            : "Mantenete quieto unos segundos hasta que el peso quede fijo (descalzo para bioimpedancia).";
 
   const biaChips = [];
   if (liveState.imp) biaChips.push(`<span class="pill acc">${int(liveState.imp)} Ω</span>`);
@@ -692,9 +695,9 @@ function renderLive() {
 }
 
 function commitLiveReading() {
-  if (!liveState.kg || liveState.saved) return;
+  if (!liveState.kg) return;
   clearTimeout(liveState.autoTimer);
-  const entry = addEntry({
+  const payload = {
     kg: liveState.kg,
     imp: liveState.imp,
     fat: liveState.fat,
@@ -705,12 +708,20 @@ function commitLiveReading() {
     visceral: liveState.visceral,
     source: "ble",
     proto: liveState.proto
-  });
+  };
+  if (liveState.saved && liveState.savedId) {
+    updateEntry(liveState.savedId, payload);
+    if (S.sync.room) syncPush(true).catch(() => {});
+    renderLive();
+    return;
+  }
+  const entry = addEntry(payload);
+  liveState.saved = true;
+  liveState.savedId = entry.id;
   if (ble.device && ble.device.name) {
     S.settings.lastDevice = ble.device.name;
     save.settings();
   }
-  liveState.saved = true;
   haptic([15, 40, 20]);
   UI.toast(`Guardado: ${dec2(entry.kg)} kg`);
   if (S.sync.room) syncPush(true).catch(() => {});
@@ -725,13 +736,21 @@ ble.addEventListener("log", e => {
     if (liveOpen && !liveState.kg) renderLive();
   }
 });
+ble.addEventListener("biostate", e => {
+  liveState.bioState = e.detail;
+  if (e.detail === "measuring" && liveState.locked && S.settings.autoSaveBle && !liveState.saved) {
+    clearTimeout(liveState.autoTimer);
+    liveState.autoTimer = setTimeout(() => commitLiveReading(), 8000);
+  }
+  if (liveOpen) renderLive();
+});
 ble.addEventListener("impedance", e => {
   liveState.imp = e.detail.imp;
+  if (liveState.saved && liveState.savedId) commitLiveReading();
   if (liveOpen) renderLive();
 });
 ble.addEventListener("reading", e => {
   const r = e.detail;
-  if (liveState.saved) return;
   liveState.kg = r.kg;
   liveState.proto = r.proto;
   if (r.imp) liveState.imp = r.imp;
@@ -741,13 +760,22 @@ ble.addEventListener("reading", e => {
   if (r.bone != null) liveState.bone = r.bone;
   if (r.bmr != null) liveState.bmr = r.bmr;
   if (r.visceral != null) liveState.visceral = r.visceral;
+
+  if (r.finalComplete) {
+    liveState.locked = true;
+    liveState.bioState = "done";
+    if (S.settings.autoSaveBle || liveState.saved) commitLiveReading();
+    else if (liveOpen) renderLive();
+    return;
+  }
+
   if (r.locked && !liveState.locked) {
     liveState.locked = true;
     haptic(14);
-    if (S.settings.autoSaveBle) {
+    if (S.settings.autoSaveBle && !liveState.saved) {
       clearTimeout(liveState.autoTimer);
-      // Esperamos 1.8 s por si la impedancia llega en un paquete separado justo después del peso fijo
-      liveState.autoTimer = setTimeout(() => commitLiveReading(), 1800);
+      // Si la balanza sigue con fase de bioimpedancia (SWAN), esperamos hasta 9 s (o guardamos al instante cuando llegue MGB-20)
+      liveState.autoTimer = setTimeout(() => commitLiveReading(), r.waitBia ? 9000 : 1800);
     }
   }
   if (liveOpen) renderLive();
@@ -1173,8 +1201,16 @@ document.addEventListener("click", async e => {
       const r = await fetch("version.json?z=" + Date.now(), { cache: "no-store" });
       const j = await r.json();
       if (j.version && j.version !== VERSION) {
-        UI.toast(`Nueva versión ${j.version} — recargando…`);
-        setTimeout(() => location.reload(), 900);
+        UI.toast(`Actualizando a v${j.version}…`);
+        if ("caches" in window) {
+          const ks = await caches.keys();
+          await Promise.all(ks.map(k => caches.delete(k)));
+        }
+        if ("serviceWorker" in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(reg => reg.update().catch(() => {})));
+        }
+        setTimeout(() => location.reload(), 500);
       } else UI.toast(`Ya tenés la última versión (v${VERSION})`);
     } catch (err) { UI.toast("Sin conexión"); }
   }

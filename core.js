@@ -227,14 +227,24 @@
         const kg = rawW >= 2500 ? rawW / 100 : rawW / 10;
         if (!validKg(kg)) return null;
         if (flag === 0xca) state.mgbKg = round2(kg);
-        return { proto: "MGB-8", kg: round2(kg), locked: flag === 0xca, imp: state.mgbImp || null };
+        return {
+          proto: "MGB-8",
+          kg: round2(kg),
+          locked: flag === 0xca,
+          waitBia: flag === 0xca, // SWAN sigue midiendo bioimpedancia 4-7 s después de 0xCA
+          imp: state.mgbImp || null
+        };
       }
-      if (flag === 0xcb && b[2] === 0xfd && b[3] === 0x01) {
-        const imp = u16be(b, 4);
-        if (imp >= 100 && imp <= 1500) {
-          state.mgbImp = imp;
-          if (state.mgbKg) return { proto: "MGB-8", kg: state.mgbKg, locked: true, imp };
-          return { proto: "MGB-8", impOnly: true, imp };
+      if (flag === 0xcb && b[2] === 0xfd) {
+        if (b[3] === 0x00) return { proto: "MGB-8", bioState: "measuring" };
+        if (b[3] === 0xff) return { proto: "MGB-8", bioState: "unavailable" };
+        if (b[3] === 0x01) {
+          const imp = u16be(b, 4);
+          if (imp >= 100 && imp <= 1500) {
+            state.mgbImp = imp;
+            if (state.mgbKg) return { proto: "MGB-8", kg: state.mgbKg, locked: true, waitBia: true, imp };
+            return { proto: "MGB-8", impOnly: true, imp };
+          }
         }
       }
       return null;
@@ -245,16 +255,18 @@
         const kg = u16be(b, 12) / 10;
         const fat = u16be(b, 16) / 10;
         if (!validKg(kg)) return null;
-        state.mgbPart1 = { proto: "MGB-20", kg: round2(kg), locked: true };
+        state.mgbPart1 = { proto: "MGB-20", kg: round2(kg), locked: true, waitBia: true, imp: state.mgbImp || null };
         if (fat > 2 && fat < 75) state.mgbPart1.fat = round1(fat);
         return { ...state.mgbPart1 };
       }
       if (b[0] === 0x01 && b[1] === 0x00 && state.mgbPart1) {
-        const m = { ...state.mgbPart1 };
+        const m = { ...state.mgbPart1, waitBia: false, finalComplete: true };
         const muscle = u16le(b, 2) / 10;
+        const bmr = Math.round(u16le(b, 4) / 10);
         const bone = u16le(b, 6) / 10;
         const water = u16le(b, 8) / 10;
         if (muscle > 10 && muscle < 85) m.muscle = round1(muscle);
+        if (bmr > 500 && bmr < 5000) m.bmr = bmr;
         if (bone > 0.5 && bone < 10) m.bone = round1(bone);
         if (water > 20 && water < 85) m.water = round1(water);
         state.mgbPart1 = null;

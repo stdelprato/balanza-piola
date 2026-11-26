@@ -288,13 +288,18 @@ class ScaleBLE extends EventTarget {
   }
 
   emitReading(r) {
+    if (r.bioState) {
+      this.log(r.bioState === "measuring" ? "⚡ Midiendo bioimpedancia (quedate descalzo)..." : "ℹ Sin lectura de bioimpedancia (FD-FF)");
+      this.dispatchEvent(new CustomEvent("biostate", { detail: r.bioState }));
+      return;
+    }
     if (r.impOnly) {
       this.log(`⚡ Impedancia recibida: ${r.imp} Ω`);
       this.dispatchEvent(new CustomEvent("impedance", { detail: r }));
       return;
     }
     this.lastReading = { ...r, at: Date.now() };
-    this.log(`✓ ${r.proto}: ${r.kg} kg${r.imp ? ` · ${r.imp} Ω` : ""}${r.fat ? ` · ${r.fat}% grasa` : ""}${r.locked ? " [FIJO]" : " [midiendo]"}`);
+    this.log(`✓ ${r.proto}: ${r.kg} kg${r.imp ? ` · ${r.imp} Ω` : ""}${r.fat ? ` · ${r.fat}% grasa` : ""}${r.finalComplete ? " [COMPLETO]" : r.locked ? " [FIJO]" : " [midiendo]"}`);
     this.dispatchEvent(new CustomEvent("reading", { detail: this.lastReading }));
   }
 
