@@ -5,7 +5,7 @@ const { icon, esc, haptic, int, dec1, dec2, signed1, signed2 } = UI;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const VERSION = "1.1";
+const VERSION = "1.2";
 const FIREBASE_DB = "https://paso-682df-default-rtdb.firebaseio.com";
 const TAGS = ["Ayunas", "Post-entreno", "Tarde", "Noche"];
 

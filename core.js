@@ -210,7 +210,7 @@
       mk(0xfb, isMale ? 1 : 2, Math.max(10, Math.min(99, Math.round(age))), Math.max(80, Math.min(250, Math.round(heightCm)))),
       mk(0xfd, Math.max(0, now.getFullYear() - 2000), now.getMonth() + 1, now.getDate()),
       mk(0xfc, now.getHours(), now.getMinutes(), now.getSeconds()),
-      mk(0xfe, 6, 1, 0) // KG = 1
+      mk(0xfe, 6, 0, 0) // KG = 0, LB = 1, ST = 2
     ];
   }
 
@@ -222,7 +222,9 @@
       if (sum !== b[7]) return null;
       const flag = b[6];
       if ((flag === 0xce || flag === 0xca) && b[4] === 0 && b[5] === 0) {
-        const kg = u16be(b, 2) / 100;
+        const rawW = u16be(b, 2);
+        // SWAN/Femmto manda décimas de kg (ej. 985 -> 98.5 kg); otras variantes MGB mandan centésimas (ej. 9910 -> 99.10 kg)
+        const kg = rawW >= 2500 ? rawW / 100 : rawW / 10;
         if (!validKg(kg)) return null;
         if (flag === 0xca) state.mgbKg = round2(kg);
         return { proto: "MGB-8", kg: round2(kg), locked: flag === 0xca, imp: state.mgbImp || null };
