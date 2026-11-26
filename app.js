@@ -5,7 +5,7 @@ const { icon, esc, haptic, int, dec1, dec2, signed1, signed2 } = UI;
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-const VERSION = "1.0";
+const VERSION = "1.1";
 const FIREBASE_DB = "https://paso-682df-default-rtdb.firebaseio.com";
 const TAGS = ["Ayunas", "Post-entreno", "Tarde", "Noche"];
 
@@ -655,6 +655,8 @@ function renderLive() {
   if (preview && preview.water != null) biaChips.push(`<span class="pill soft">Agua ${dec1(preview.water)}%</span>`);
   if (preview && preview.muscle != null) biaChips.push(`<span class="pill soft">Músculo ${dec1(preview.muscle)}%</span>`);
 
+  const lastLog = ble.logs.length ? ble.logs[ble.logs.length - 1] : "";
+
   $("#live").innerHTML = `
     <div class="live-in">
       <div class="live-top">
@@ -673,6 +675,7 @@ function renderLive() {
         </div>
         ${biaChips.length ? `<div class="live-bia">${biaChips.join("")}</div>` : ""}
         <p class="scale-hint">${esc(hint)}</p>
+        ${lastLog ? `<p class="scale-hint" style="margin-top:6px;font:11.5px/1.4 ui-monospace,monospace;color:var(--t3);word-break:break-all">${esc(lastLog)}</p>` : ""}
       </div>
 
       <div class="live-actions">
@@ -1070,9 +1073,11 @@ document.addEventListener("click", async e => {
     try {
       await ble.pickAndConnect();
       if (ble.device && ble.device.name) { S.settings.lastDevice = ble.device.name; save.settings(); }
+      if (S.sync.room) syncPush(true).catch(() => {});
       renderLive();
     } catch (err) {
       if (err && err.name !== "NotFoundError") UI.toast(err.message || "Error al conectar");
+      if (S.sync.room) syncPush(true).catch(() => {});
       renderLive();
     }
     return;
@@ -1084,6 +1089,7 @@ document.addEventListener("click", async e => {
       renderLive();
     } catch (err) {
       UI.toast(err.message || "Broadcast no disponible");
+      if (S.sync.room) syncPush(true).catch(() => {});
       renderLive();
     }
     return;

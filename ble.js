@@ -31,10 +31,7 @@ class ScaleBLE extends EventTarget {
     0xfee0, // Variantes OEM
     0xf0a0, // Elink / AiLink
     0xae00, // QN nuevo
-    0x1810, // Blood Pressure / multi-health
-    "0000fff0-0000-1000-8000-00805f9b34fb",
-    "0000ffb0-0000-1000-8000-00805f9b34fb",
-    "0000ffe0-0000-1000-8000-00805f9b34fb"
+    0x1810  // Blood Pressure / multi-health
   ];
 
   get supported() { return !!(navigator.bluetooth); }
@@ -69,17 +66,27 @@ class ScaleBLE extends EventTarget {
 
   // Selector de dispositivo + conexión GATT (funciona out-of-the-box en Chrome Android)
   async pickAndConnect() {
-    if (!this.supported) throw new Error("Este navegador no soporta Web Bluetooth. Abrí la app en Chrome para Android.");
+    if (!this.supported) {
+      this.log("✗ navigator.bluetooth no existe en este navegador");
+      throw new Error("Este navegador no soporta Web Bluetooth. Abrí la app en Chrome para Android.");
+    }
     await this.stop();
     this.protoState = {};
     this.lastReading = null;
     this.log("Abriendo selector Bluetooth (todos los dispositivos)...");
-    const d = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: ScaleBLE.OPTIONAL_SERVICES
-    });
-    this.useDevice(d);
-    await this.connectGatt();
+    try {
+      const d = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: ScaleBLE.OPTIONAL_SERVICES
+      });
+      this.log(`Elegiste: "${d.name || "(sin nombre)"}" [${d.id}]`);
+      this.useDevice(d);
+      await this.connectGatt();
+    } catch (e) {
+      this.log(`✗ Selector/GATT (${e.name || "Error"}): ${e.message || e}`);
+      this.set("off");
+      throw e;
+    }
   }
 
   // Reconecta sin volver a abrir el selector si Chrome ya recuerda la balanza
@@ -216,25 +223,37 @@ class ScaleBLE extends EventTarget {
 
   // Escaneo pasivo de BLE Advertisements (para balanzas broadcast-only como OKOK C0 / V20 / AAAx)
   async startBroadcastScan() {
-    if (!this.supported) throw new Error("Este navegador no soporta Web Bluetooth.");
+    if (!this.supported) {
+      this.log("✗ navigator.bluetooth no disponible");
+      throw new Error("Este navegador no soporta Web Bluetooth.");
+    }
     if (!this.canScan) {
-      throw new Error("Tu Chrome necesita activar el flag #enable-experimental-web-platform-features para escaneo pasivo (broadcast).");
+      this.log("✗ requestLEScan no disponible (falta flag chrome://flags/#enable-experimental-web-platform-features)");
+      throw new Error("Activá chrome://flags/#enable-experimental-web-platform-features en Chrome Android para Broadcast.");
     }
     await this.stop();
     this.mode = "broadcast";
     this.protoState = {};
     this.lastReading = null;
+    this._seenAdv = new Map();
     this.set("scanning");
     this.log("Iniciando escaneo pasivo de anuncios BLE (broadcast)...");
-    navigator.bluetooth.removeEventListener("advertisementreceived", this._onAdv);
-    navigator.bluetooth.addEventListener("advertisementreceived", this._onAdv);
-    this.scan = await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true });
-    this.log("Escuchando anuncios BLE · subite a la balanza");
+    try {
+      navigator.bluetooth.removeEventListener("advertisementreceived", this._onAdv);
+      navigator.bluetooth.addEventListener("advertisementreceived", this._onAdv);
+      this.scan = await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true });
+      this.log("Escuchando TODOS los anuncios BLE cercanos · subite a la balanza");
+    } catch (e) {
+      this.log(`✗ Broadcast (${e.name || "Error"}): ${e.message || e}`);
+      this.set("off");
+      throw e;
+    }
   }
 
   handleAdvertisement(ev) {
     const C = BalanzaCore;
     const name = (ev.device && ev.device.name) || "";
+    const devId = (ev.device && ev.device.id) || "?";
     const mEntries = [];
     const sEntries = [];
     if (ev.manufacturerData) {
@@ -244,17 +263,21 @@ class ScaleBLE extends EventTarget {
       ev.serviceData.forEach((dv, uuid) => sEntries.push([uuid, C.toBytes(dv)]));
     }
 
-    // Logueamos anuncios que parezcan de balanza o tengan datos relevantes (sin spamear con auriculares/TVs)
-    const looksScale = /scale|femmto|chipsea|okok|yoda|aifit|icomon|swan|qn-|renpho|mibfs|miscale|aaa|health|body|fat|adv/i.test(name)
-      || mEntries.some(([cid]) => cid === 0x20ca || cid === 0x11ca || cid === 0xf0ff || (cid & 0xff) === 0xc0)
-      || sEntries.some(([u]) => /181d|181b|ffb0|fff0|ffe0/i.test(String(u)));
-
-    if (looksScale || this.mode === "gatt") {
+    const rssi = ev.rssi ?? -60;
+    const hasPayload = mEntries.length > 0 || sEntries.length > 0 || !!name;
+    // En modo broadcast registramos cualquier dispositivo cercano (RSSI >= -82) deduplicado por payload
+    if (hasPayload && (rssi >= -82 || this.mode === "gatt")) {
       const mStr = mEntries.map(([cid, d]) => `M:${cid.toString(16).padStart(4, "0").toUpperCase()}=${C.hex(d)}`).join(" ");
       const sStr = sEntries.map(([u, d]) => `S:${shortUuid(u)}=${C.hex(d)}`).join(" ");
-      const summary = `ADV "${name || "?"}" rssi:${ev.rssi ?? "?"} ${mStr} ${sStr}`.trim();
-      this.recordPacket("ADV", summary);
-      this.log(summary);
+      const sig = `${devId}|${name}|${mStr}|${sStr}`;
+      if (!this._seenAdv) this._seenAdv = new Map();
+      const prevAt = this._seenAdv.get(sig) || 0;
+      if (Date.now() - prevAt > 3000) {
+        this._seenAdv.set(sig, Date.now());
+        const summary = `ADV "${name || "?"}" rssi:${ev.rssi ?? "?"} ${mStr} ${sStr}`.trim();
+        this.recordPacket("ADV", summary);
+        this.log(summary);
+      }
     }
 
     const parsed = C.parseAdvertisement({ manufacturerData: mEntries, serviceData: sEntries });
